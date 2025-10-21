@@ -4,11 +4,26 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>👑 Royal AI — Professional Case Management</title>
+
+  <!-- Security (optional but recommended if hosting outside GitHub Pages) -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 img-src 'self' data: https:;
+                 style-src 'self' https://fonts.googleapis.com 'unsafe-inline';
+                 font-src https://fonts.gstatic.com;
+                 script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net;
+                 connect-src https://script.google.com;
+                 frame-ancestors 'none';">
+
+  <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Tajawal:wght@400;700&display=swap" rel="stylesheet"/>
+
+  <!-- UI Libraries -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
   <style>
     :root { --royal:#0a112d; --gold:#d4af37; --glass:rgba(255,255,255,.07);} 
     body { background: radial-gradient(1200px 600px at 20% -10%, rgba(212,175,55,.14), transparent 60%), linear-gradient(145deg, #0b132e 0%, #000 100%); color:#fff; font-family:"Tajawal", system-ui, sans-serif; min-height:100vh; padding:1rem; }
@@ -125,14 +140,15 @@
     <h2 class="text-lg font-bold mb-3">🔐 صلاحيات الإدارة</h2>
     <input id="adminTokenInput" class="input mb-2" type="password" placeholder="أدخل رمز الإدارة">
     <button id="btnSaveToken" class="btn" type="button">💾 حفظ الرمز</button>
-    <div class="opacity-70 text-sm mt-2">الرمز يُستخدم للتحديث والرفع فقط</div>
+    <div class="opacity-70 text-sm mt-2">الرمز يُستخدم للتحديث والرفع والعمليات الحساسة</div>
   </section>
 </main>
 
 <script>
 /* ===== Config ===== */
 const API_URL = "https://script.google.com/macros/s/AKfycbzS82y_ABu9D-yjo9JYMjmMnZ3avdki1uC8QDZp41VsjQYMTEIXW56f3kzhGLsukSs8rw/exec";
-let ADMIN_TOKEN = null;
+let ADMIN_TOKEN = localStorage.getItem('royal_admin_token') || null;
+const PUBLIC_ACTIONS = new Set(['apiHealth_', 'apiLists_']); // everything else requires token
 
 /* ===== Tiny helpers ===== */
 function $(sel,root=document){return root.querySelector(sel)}
@@ -143,16 +159,20 @@ function toast(msg,ok=true){
   t.style.color=ok?'#00ff99':'#ff5c5c';
   setTimeout(()=>t.classList.add('hidden'),3500);
 }
-async function callAPI(action,body={}){
-  const r=await fetch(API_URL,{
-    method:'POST',
-    headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({action, ...body})
-  });
-  const j=await r.json().catch(()=>({ok:false,message:'Bad JSON'}));
-  if(!j.ok) throw new Error(j.message||'خطأ');
+
+/** POST to Apps Script with auto-adminToken for protected actions */
+async function callAPI(action, body = {}) {
+  const payload = { action, ...body };
+  if (!PUBLIC_ACTIONS.has(action)) {
+    if (!ADMIN_TOKEN) throw new Error('يجب إدخال رمز الإدارة قبل المتابعة');
+    payload.adminToken = ADMIN_TOKEN;
+  }
+  const r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payload) });
+  const j = await r.json().catch(()=>({ ok:false, message:'Bad JSON' }));
+  if (!j.ok) throw new Error(j.message || 'خطأ');
   return j;
 }
+
 function toBase64(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(f);});}
 
 /* ===== Tabs ===== */
@@ -205,6 +225,8 @@ $$('.tab-btn').forEach(b=>{
 /* ===== Admin Token ===== */
 $('#btnSaveToken').addEventListener('click',()=>{
   ADMIN_TOKEN=$('#adminTokenInput').value.trim()||null;
+  if (ADMIN_TOKEN) localStorage.setItem('royal_admin_token', ADMIN_TOKEN);
+  else localStorage.removeItem('royal_admin_token');
   toast('✅ تم حفظ رمز الإدارة');
 });
 
@@ -224,7 +246,7 @@ $('#caseForm').addEventListener('submit',async e=>{
     const file=$('#fileInput').files[0];
     if(file){
       const b64=await toBase64(file);
-      await callAPI('apiUpload_', { adminToken: ADMIN_TOKEN, caseNumber: cn, filename:file.name, mimeType:file.type, file:b64 });
+      await callAPI('apiUpload_', { caseNumber: cn, filename:file.name, mimeType:file.type, file:b64 });
     }
     toast(`✅ تم إرسال الحالة: ${cn}`);
     f.reset();
@@ -237,10 +259,12 @@ $('#caseForm').addEventListener('submit',async e=>{
 $('#btnSearch').addEventListener('click',async()=>{
   try{
     const q=$('#q').value.trim();
-    const r=await callAPI('apiSearch_', { q });
+    if (q.length < 2) { toast('الحد الأدنى حرفان للبحث', false); return; }
+    const r=await callAPI('apiSearch_', { q, offset:0, limit:50 });
+    const rows = r.records || r.data || []; // legacy fallback
     const box=$('#searchResults'); box.innerHTML='';
-    if(!r.records.length){ box.innerHTML='<div>❌ لا توجد نتائج</div>'; return; }
-    r.records.forEach(rec=>{
+    if(!rows.length){ box.innerHTML='<div>❌ لا توجد نتائج</div>'; return; }
+    rows.forEach(rec=>{
       box.innerHTML += `
       <div class="glass p-2 rounded">
         <div class="flex justify-between">
@@ -281,60 +305,104 @@ $('#btnAdminUpdate').addEventListener('click',async()=>{
   try{
     const cn=$('#adminCaseNumber').value.trim();
     const updates={ Status: $('#adminStatus').value, 'Payment Status': $('#adminPayment').value, Notes: $('#adminNotes').value };
-    await callAPI('apiUpdate_', { adminToken: ADMIN_TOKEN, caseNumber: cn, updates });
+    await callAPI('apiUpdate_', { caseNumber: cn, updates });
 
     const file=$('#adminFile').files[0];
     if(file){
       const b64=await toBase64(file);
-      await callAPI('apiUpload_', { adminToken: ADMIN_TOKEN, caseNumber: cn, filename:file.name, mimeType:file.type, file:b64 });
+      await callAPI('apiUpload_', { caseNumber: cn, filename:file.name, mimeType:file.type, file:b64 });
     }
     toast('✅ تم التحديث بنجاح');
   }catch(e){ toast(e.message,false); }
 });
 
-/* ===== KPIs ===== */
+/* ===== KPIs (new + legacy shapes) ===== */
 async function loadKPI(){
   try{
-    const r=await callAPI('apiInsights_');
-    const m=r.metrics||{};
-    const wrap=$('#kpiWrap'); wrap.innerHTML='';
-    const labels=Object.keys(m); const data=Object.values(m);
+    const r = await callAPI('apiInsights_');
+    const m = r.metrics || {};
 
-    labels.forEach((k,i)=>{
-      wrap.innerHTML += `
+    const byStatus  = m.byStatus  || {};
+    const byPayment = m.byPayment || {};
+    const total     = (typeof m.totalCases === 'number') ? m.totalCases : null;
+
+    const wrap = $('#kpiWrap'); wrap.innerHTML='';
+
+    if (Object.keys(byStatus).length || Object.keys(byPayment).length) {
+      if (total !== null) wrap.innerHTML += card('إجمالي الحالات', total);
+      Object.entries(byStatus).forEach(([k,v])=> wrap.innerHTML += card(`الحالة: ${k}`, v));
+      Object.entries(byPayment).forEach(([k,v])=> wrap.innerHTML += card(`الدفع: ${k}`, v));
+
+      const labels = Array.from(new Set([...Object.keys(byStatus), ...Object.keys(byPayment)]));
+      const statusData  = labels.map(l => byStatus[l]  || 0);
+      const paymentData = labels.map(l => byPayment[l] || 0);
+
+      const ctx=$('#chart').getContext('2d');
+      if (window.__chart) window.__chart.destroy();
+      window.__chart=new Chart(ctx,{
+        type:'bar',
+        data:{
+          labels,
+          datasets:[
+            { label:'حسب الحالة', data: statusData },
+            { label:'حسب الدفع',  data: paymentData }
+          ]
+        },
+        options:{ responsive:true, plugins:{ legend:{ display:true } }, scales:{ y:{ beginAtZero:true } } }
+      });
+    } else {
+      // Legacy: flat object {Open:n, Paid:n, ...}
+      const labels = Object.keys(m);
+      const data   = Object.values(m);
+      labels.forEach((k,i)=> wrap.innerHTML += card(k, data[i]));
+
+      const ctx=$('#chart').getContext('2d');
+      if (window.__chart) window.__chart.destroy();
+      window.__chart=new Chart(ctx,{
+        type:'bar',
+        data:{ labels, datasets:[{ data }]},
+        options:{ plugins:{ legend:{display:false}}, scales:{ y:{ beginAtZero:true }}}
+      });
+    }
+
+    function card(title, value){
+      return `
         <div class="glass p-2 text-center">
-          <div class="text-sm opacity-70">${k}</div>
-          <div class="text-2xl font-bold">${data[i]}</div>
+          <div class="text-sm opacity-70">${title}</div>
+          <div class="text-2xl font-bold">${value}</div>
         </div>`;
-    });
-
-    const ctx=$('#chart').getContext('2d');
-    if(window.__chart) window.__chart.destroy();
-    window.__chart=new Chart(ctx,{
-      type:'bar',
-      data:{ labels, datasets:[{ data, backgroundColor:'gold' }]},
-      options:{ plugins:{ legend:{display:false}}, scales:{ y:{ beginAtZero:true } } }
-    });
+    }
   }catch(e){ toast(e.message,false); }
 }
 loadKPI();
 
-/* ===== Audit ===== */
+/* ===== Audit (secure POST with legacy GET fallback) ===== */
 $('#btnLoadAudit').addEventListener('click',async()=>{
+  const wrap=$('#auditWrap'); wrap.innerHTML='...';
   try{
-    const r=await fetch(`${API_URL}?action=fetchAudit`);
-    const res=await r.json();
-    const wrap=$('#auditWrap'); wrap.innerHTML='';
-    if(!res.ok || !res.data || !res.data.length){ wrap.innerHTML='❌ لا يوجد سجل'; return; }
+    // Preferred: secured POST route if your backend exposes apiFetchAudit_ in route()
+    const postRes = await callAPI('apiFetchAudit_', {});
+    const rows = postRes.data || postRes.records || [];
+    renderAudit(rows);
+  }catch{
+    // Fallback to legacy GET helper if POST not available
+    try{
+      const r=await fetch(`${API_URL}?action=fetchAudit`);
+      const res=await r.json();
+      renderAudit((res && res.data) || []);
+    }catch(e){ toast(e.message,false); }
+  }
 
+  function renderAudit(list){
+    const wrap=$('#auditWrap'); wrap.innerHTML='';
+    if(!list.length){ wrap.innerHTML='❌ لا يوجد سجل'; return; }
     const table=document.createElement('table');
     table.className='w-full text-left';
-    const thead=document.createElement('thead');
-    thead.innerHTML='<tr><th class="p-2">التاريخ</th><th class="p-2">نوع الحدث</th><th class="p-2">التفاصيل</th></tr>';
-    table.appendChild(thead);
-
-    const tbody=document.createElement('tbody');
-    res.data.slice(-200).reverse().forEach(it=>{
+    table.innerHTML = `
+      <thead><tr><th class="p-2">التاريخ</th><th class="p-2">نوع الحدث</th><th class="p-2">التفاصيل</th></tr></thead>
+      <tbody></tbody>`;
+    const tbody = table.querySelector('tbody');
+    list.slice(-200).reverse().forEach(it=>{
       const tr=document.createElement('tr');
       tr.innerHTML = `
         <td class="p-2">${it['Timestamp']||it['Time']||''}</td>
@@ -342,20 +410,15 @@ $('#btnLoadAudit').addEventListener('click',async()=>{
         <td class="p-2">${it['Details']||it['Detail']||''}</td>`;
       tbody.appendChild(tr);
     });
-    table.appendChild(tbody);
     wrap.appendChild(table);
-  }catch(e){ toast(e.message,false); }
+  }
 });
 
-/* ===== Sheets (optional if backend supports listSheets_) ===== */
+/* ===== Sheets (placeholder unless backend provides listSheets_) ===== */
 $('#btnLoadSheets').addEventListener('click', async ()=>{
   try{
-    // If your backend has listSheets_, switch to POST callAPI('listSheets_', {})
-    const res = await fetch(API_URL+'?action=listSheets'); // this build returns message; adjust if needed
-    const data = await res.json();
     const wrap = $('#sheetsWrap');
-    wrap.innerHTML = '';
-    wrap.textContent = data.message || 'Use the POST action listSheets_ in your backend to fetch sheets metadata.';
+    wrap.textContent = 'لجلب معلومات الشيتات، أضف أكشن listSheets_ في الطرف الخلفي ثم استدعِ callAPI("listSheets_", {}).';
   }catch(e){ toast(e.message,false); }
 });
 </script>
